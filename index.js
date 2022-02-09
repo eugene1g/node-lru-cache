@@ -447,6 +447,65 @@ class LRUCache {
     }
   }
 
+  async fetch (k, fetchFn, {
+    allowStale = this.allowStale,
+    updateAgeOnGet = this.updateAgeOnGet,
+  } = {}) {
+    const index = this.keyMap.get(k)
+    if (index === undefined) {
+      let p = fetchFn(k)
+      const isPromise = p &&
+        typeof p === 'object' &&
+        typeof p.then === 'function'
+      if (isPromise) {
+        p = p.then(v => {
+          if (this.keyMap.get(k) === index && p === this.valList[index]) {
+            this.set(k, v)
+          }
+          return v
+        })
+      }
+      this.set(k, p)
+      const index = this.keyMap.get(k)
+      return p
+    } else {
+      const v = this.valList[index]
+      if (v &&
+          typeof v === 'object' &&
+          typeof v.then === 'function') {
+        const hasStale = Object.prototype.hasOwnProperty
+          .call(v, '__staleWhileFetching')
+        return allowStale && hasStale ? v.__staleWhileFetching : v
+      }
+
+      if (!this.isStale(index)) {
+        this.moveToTail(index)
+        if (updateAgeOnGet) {
+          this.updateItemAge(index)
+        }
+        return v
+      }
+
+      let p = fetchFn(k)
+      const isPromise = p &&
+        typeof p === 'object' &&
+        typeof p.then === 'function'
+      if (isPromise) {
+        p = p.then(v => {
+          if (this.keyMap.get(k) === index && p === this.valList[index]) {
+            // still in cache, hasn't moved or been overwritten
+            this.set(k, v)
+          }
+          return v
+        })
+        p.__staleWhileFetching = v
+      }
+      const ret = allowStale && isPromise ? p.__staleWhileFetching : p
+      this.set(k, p)
+      return ret
+    }
+  }
+
   get (k, {
     allowStale = this.allowStale,
     updateAgeOnGet = this.updateAgeOnGet,
@@ -455,8 +514,15 @@ class LRUCache {
     if (index !== undefined) {
       if (this.isStale(index)) {
         const value = allowStale ? this.valList[index] : undefined
-        this.delete(k)
-        return value
+        const fetching = allowStale &&
+          value &&
+          typeof value === 'object' &&
+          typeof value.then === 'function' &&
+          Object.prototype.hasOwnProperty.call(value, '__staleWhileFetching')
+        if (!fetching) {
+          this.delete(k)
+        }
+        return fetching ? value.__staleWhileFetching : value
       } else {
         this.moveToTail(index)
         if (updateAgeOnGet) {
